@@ -117,7 +117,7 @@ def save_brute_force_result(result_data, run_id=None):
 st.sidebar.header("📂 เลือกไฟล์ข้อมูล")
 
 # Check for attached files
-attached_dir = Path("assets")
+attached_dir = Path("attached_assets")
 attached_files = {}
 
 if attached_dir.exists():
