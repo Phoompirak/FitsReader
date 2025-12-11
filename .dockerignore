@@ -1,0 +1,23 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Docker
+Dockerfile
+docker-compose.yml
+Makefile
+
+# Explicitly loose on JSONs as requested (no *.json here)

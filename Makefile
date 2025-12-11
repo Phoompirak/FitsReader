@@ -1,0 +1,20 @@
+.PHONY: build up down logs shell clean
+
+build:
+	docker-compose build
+
+up:
+	docker-compose up -d
+
+down:
+	docker-compose down
+
+logs:
+	docker-compose logs -f
+
+shell:
+	docker-compose exec app /bin/bash
+
+clean:
+	docker-compose down -v
+	docker system prune -f

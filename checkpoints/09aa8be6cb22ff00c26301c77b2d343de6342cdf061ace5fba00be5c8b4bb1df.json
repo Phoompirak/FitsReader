@@ -1,0 +1,32 @@
+{
+    "job_hash": "09aa8be6cb22ff00c26301c77b2d343de6342cdf061ace5fba00be5c8b4bb1df",
+    "completed_parts": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+    ],
+    "best_result_so_far": {
+        "best_chi2_dof": 29733185127.3448,
+        "best_params": {
+            "pl_norm": 0.001,
+            "photon_index": 2.8,
+            "nH": 1.0,
+            "refl_norm": 0.1,
+            "line_energy": 6.314285714285714,
+            "line_sigma": 0.3,
+            "line_norm": 0.1
+        },
+        "best_result": {
+            "chi_squared": 41923791029556.164,
+            "dof": 1410,
+            "reduced_chi_squared": 29733185127.3448,
+            "n_data_points": 1417
+        }
+    },
+    "last_updated": "2025-12-11 07:56:44.666471"
+}
