@@ -13,6 +13,19 @@ c_light = 2.99792458e8     # m/s (Speed of light)
 k_boltzmann = 1.380649e-23 # J/K (Boltzmann constant)
 keV_to_J = 1.60218e-16     # Conversion factor from keV to Joules
 
+try:
+    import cupy as cp
+    HAS_GPU = True
+except ImportError:
+    cp = None
+    HAS_GPU = False
+
+def get_backend(array):
+    """Return numpy or cupy module based on array type"""
+    if HAS_GPU:
+        return cp.get_array_module(array)
+    return np
+
 
 def powerlaw(energy, norm, photon_index):
     """
@@ -39,7 +52,8 @@ def powerlaw(energy, norm, photon_index):
         
     Model: F(E) = norm × E^(-Γ)
     """
-    return norm * np.power(energy, -photon_index)
+    xp = get_backend(energy)
+    return norm * xp.power(energy, -photon_index)
 
 
 def blackbody(energy, norm, kT):
@@ -67,12 +81,13 @@ def blackbody(energy, norm, kT):
         
     Model: Blackbody spectrum (simplified for X-ray)
     """
+    xp = get_backend(energy)
     # Blackbody photon spectrum
     x = energy / kT
     # Avoid overflow for large x
-    x = np.clip(x, 0, 100)
-    spectrum = norm * (energy**2) / (np.exp(x) - 1.0 + 1e-10)
-    return np.where(x < 100, spectrum, 0.0)
+    x = xp.clip(x, 0, 100)
+    spectrum = norm * (energy**2) / (xp.exp(x) - 1.0 + 1e-10)
+    return xp.where(x < 100, spectrum, 0.0)
 
 
 def tbabs(energy, nH):
@@ -99,39 +114,39 @@ def tbabs(energy, nH):
     Model: T(E) = exp(-σ(E) × nH)
     โดยที่ σ(E) คือ photoelectric cross-section
     
-    Note: ใช้ fit approximation จาก Morrison & McCammon (1983)
     แก้ไขให้ cross-section เป็นบวกเสมอและมีค่าเหมาะสมในช่วง X-ray
     """
-    E = np.asarray(energy, dtype=float)
+    xp = get_backend(energy)
+    E = xp.asarray(energy, dtype=float)
     
     # Improved photoelectric cross-section approximation
     # Based on Morrison & McCammon (1983) ApJ 270, 119
     # Valid for 0.03-10 keV
     
     # Ensure minimum energy to avoid division issues
-    E = np.maximum(E, 0.03)
+    E = xp.maximum(E, 0.03)
     
     # Cross-section in units of 10^-24 cm^2 per H atom
     # Using piecewise approximation for better accuracy
     
     # For E < 0.1 keV (soft X-ray)
     # σ ~ constant × E^-3 with positive coefficients
-    sigma_soft = 180.0 * np.power(E, -3.0)
+    sigma_soft = 180.0 * xp.power(E, -3.0)
     
     # For 0.1 < E < 2 keV (medium X-ray)
     # More accurate fit with reduced cross-section
-    sigma_mid = (17.3 + 608.1/E) * np.power(E, -3.0)
+    sigma_mid = (17.3 + 608.1/E) * xp.power(E, -3.0)
     
     # For E > 2 keV (hard X-ray)
     # Simple power-law decline
-    sigma_hard = 600.0 * np.power(E, -3.0)
+    sigma_hard = 600.0 * xp.power(E, -3.0)
     
     # Combine piecewise
-    sigma = np.where(E < 0.1, sigma_soft,
-                    np.where(E < 2.0, sigma_mid, sigma_hard))
+    sigma = xp.where(E < 0.1, sigma_soft,
+                    xp.where(E < 2.0, sigma_mid, sigma_hard))
     
     # Ensure sigma is always positive
-    sigma = np.maximum(sigma, 0.0)
+    sigma = xp.maximum(sigma, 0.0)
     
     # Optical depth τ = σ × nH
     # nH in units of 10^22 cm^-2, sigma in 10^-24 cm^2
@@ -140,11 +155,11 @@ def tbabs(energy, nH):
     
     # Transmission = exp(-τ)
     # Clip tau to avoid numerical issues
-    tau = np.minimum(tau, 100.0)  # Avoid extreme underflow
-    transmission = np.exp(-tau)
+    tau = xp.minimum(tau, 100.0)  # Avoid extreme underflow
+    transmission = xp.exp(-tau)
     
     # Ensure transmission is between 0 and 1
-    transmission = np.clip(transmission, 0.0, 1.0)
+    transmission = xp.clip(transmission, 0.0, 1.0)
     
     return transmission
 
@@ -174,8 +189,9 @@ def gaussian_line(energy, line_energy, sigma, norm):
     flux : array-like
         Photon flux (photons/cm²/s/keV)
     """
-    gaussian = norm * np.exp(-0.5 * ((energy - line_energy) / sigma)**2)
-    gaussian /= (sigma * np.sqrt(2 * np.pi))
+    xp = get_backend(energy)
+    gaussian = norm * xp.exp(-0.5 * ((energy - line_energy) / sigma)**2)
+    gaussian /= (sigma * xp.sqrt(2 * np.pi))
     return gaussian
 
 
@@ -205,23 +221,24 @@ def reflection_component(energy, refl_norm, photon_index):
     Note: นี่เป็น simplified model
     สำหรับการวิเคราะห์จริงควรใช้ relxill model ที่สมบูรณ์กว่า
     """
+    xp = get_backend(energy)
     # Simplified reflection: includes Compton hump
     # Approximate with modified power-law + Compton shoulder
     
     # Base reflection (modified power-law)
-    base_refl = refl_norm * np.power(energy, -photon_index + 0.5)
+    base_refl = refl_norm * xp.power(energy, -photon_index + 0.5)
     
     # Compton hump (peaks around 20-30 keV)
     compton_peak = 25.0  # keV
     compton_width = 10.0  # keV
-    compton_hump = refl_norm * 0.3 * np.exp(-0.5 * ((energy - compton_peak) / compton_width)**2)
+    compton_hump = refl_norm * 0.3 * xp.exp(-0.5 * ((energy - compton_peak) / compton_width)**2)
     
     # Combine components
     reflection = base_refl + compton_hump
     
     # Reflection is stronger at lower energies
     # Add energy-dependent factor
-    energy_factor = np.where(energy < 10.0, 
+    energy_factor = xp.where(energy < 10.0, 
                             1.5 - 0.05 * energy,
                             1.0)
     
@@ -237,9 +254,10 @@ def combined_model(energy, params, model_components):
     Parameters:
     -----------
     energy : array-like
-        พลังงานของโฟตอน (keV)
+        พลังงานของโฟตอน (keV) - shape (Energy,) or (Batch, Energy)
     params : dict
         พารามิเตอร์ของโมเดลทั้งหมด
+        For GPU batch mode, each param value has shape (Batch, 1)
     model_components : list of str
         รายชื่อ components ที่ต้องการใช้
         เช่น ['powerlaw', 'gaussian', 'reflection']
@@ -248,8 +266,26 @@ def combined_model(energy, params, model_components):
     --------
     total_flux : array-like
         Total photon flux (photons/cm²/s/keV)
+        Shape matches broadcasted shape of energy and params
     """
-    total_flux = np.zeros_like(energy, dtype=float)
+    xp = get_backend(energy)
+    
+    # Detect if we're in batched GPU mode by checking param shapes
+    # In batch mode, params have shape (Batch, 1) and energy has shape (Energy,)
+    # Result should be (Batch, Energy)
+    batch_size = None
+    for key, val in params.items():
+        if hasattr(val, 'shape') and len(val.shape) == 2:
+            batch_size = val.shape[0]
+            break
+    
+    if batch_size is not None:
+        # Batched mode: create output with shape (Batch, Energy)
+        energy_len = energy.shape[0] if hasattr(energy, 'shape') else len(energy)
+        total_flux = xp.zeros((batch_size, energy_len), dtype=xp.float32)
+    else:
+        # Normal mode: same shape as energy
+        total_flux = xp.zeros_like(energy, dtype=float)
     
     # Absorption (multiplicative component)
     absorption = 1.0

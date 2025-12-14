@@ -1,0 +1,61 @@
+{
+  "best_results": [
+    {
+      "run_id": null,
+      "timestamp": "2025-12-14T21:31:09.551520",
+      "chi2_dof": 5048792.419858156,
+      "params": {
+        "pl_norm": 0.001,
+        "photon_index": 2.8,
+        "nH": 1.0,
+        "refl_norm": 0.1,
+        "line_energy": 6.3428571428571425,
+        "line_sigma": 0.3,
+        "line_norm": 0.1
+      },
+      "n_combinations": 170859375,
+      "model_components": [
+        "powerlaw",
+        "tbabs",
+        "reflection",
+        "gaussian"
+      ],
+      "varied_models": [
+        "powerlaw",
+        "tbabs",
+        "reflection",
+        "gaussian"
+      ],
+      "fixed_params": {}
+    },
+    {
+      "run_id": null,
+      "timestamp": "2025-12-14T20:56:48.919834",
+      "chi2_dof": 5048792.782978724,
+      "params": {
+        "pl_norm": 0.001,
+        "photon_index": 2.8,
+        "nH": 1.0,
+        "refl_norm": 0.1,
+        "line_energy": 6.3428571428571425,
+        "line_sigma": 0.3,
+        "line_norm": 0.1
+      },
+      "n_combinations": 170859375,
+      "model_components": [
+        "powerlaw",
+        "tbabs",
+        "reflection",
+        "gaussian"
+      ],
+      "varied_models": [
+        "powerlaw",
+        "tbabs",
+        "reflection",
+        "gaussian"
+      ],
+      "fixed_params": {}
+    }
+  ],
+  "last_updated": "2025-12-14T21:31:09.551520"
+}
