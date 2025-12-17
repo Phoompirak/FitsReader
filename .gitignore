@@ -38,6 +38,7 @@ venv.bak/
 .idea/
 .DS_Store
 
+
 # Replit
 .replit
 replit.nix

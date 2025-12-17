@@ -2,6 +2,28 @@
   "best_results": [
     {
       "run_id": null,
+      "timestamp": "2025-12-17T12:32:21.396268",
+      "chi2_dof": 35.01615922236504,
+      "params": {
+        "pl_norm": 0.0001,
+        "photon_index": 4.0,
+        "nH": 0.0,
+        "energy_min": 0.1,
+        "energy_max": 3.0
+      },
+      "n_combinations": 759375,
+      "model_components": [
+        "powerlaw",
+        "tbabs"
+      ],
+      "varied_models": [
+        "powerlaw",
+        "tbabs"
+      ],
+      "fixed_params": {}
+    },
+    {
+      "run_id": null,
       "timestamp": "2025-12-14T21:31:09.551520",
       "chi2_dof": 5048792.419858156,
       "params": {
@@ -55,7 +77,40 @@
         "gaussian"
       ],
       "fixed_params": {}
+    },
+    {
+      "run_id": null,
+      "timestamp": "2025-12-17T12:31:52.575795",
+      "chi2_dof": 697421840.855967,
+      "params": {
+        "pl_norm": 0.0001,
+        "photon_index": 4.0,
+        "nH": 5.0,
+        "refl_norm": 0.01,
+        "energy_min": 0.1,
+        "energy_max": 3.0,
+        "line_energy": 6.4,
+        "line_sigma": 0.1,
+        "line_norm": 1.0
+      },
+      "n_combinations": 11390625,
+      "model_components": [
+        "powerlaw",
+        "tbabs",
+        "reflection",
+        "gaussian"
+      ],
+      "varied_models": [
+        "powerlaw",
+        "tbabs",
+        "reflection"
+      ],
+      "fixed_params": {
+        "line_energy": 6.4,
+        "line_sigma": 0.1,
+        "line_norm": 1.0
+      }
     }
   ],
-  "last_updated": "2025-12-14T21:31:09.551520"
+  "last_updated": "2025-12-17T12:32:21.396268"
 }

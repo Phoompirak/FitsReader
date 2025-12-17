@@ -8,6 +8,57 @@ import pandas as pd
 import spectral_models as sm
 import spectral_fitting as sf
 from datetime import datetime
+import matplotlib.pyplot as plt
+import io
+
+def generate_report_image(energy, observed_rate, observed_error, model_rate, residuals, chi2_dof, best_params, model_components):
+    """
+    Generate a summary image with Spectrum, Residuals, and Statistics using Matplotlib.
+    Returns: BytesIO object containing the PNG image.
+    """
+    # Create figure with GridSpec (2 plots: 3:1 ratio)
+    fig = plt.figure(figsize=(10, 8), dpi=100)
+    gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.0)
+    
+    # Upper panel: Spectrum
+    ax1 = fig.add_subplot(gs[0])
+    ax1.errorbar(energy, observed_rate, yerr=observed_error, fmt='k.', label='Data', capsize=0, markersize=3, alpha=0.6)
+    ax1.plot(energy, model_rate, 'r-', label='Model', linewidth=2)
+    ax1.set_ylabel('Count Rate (counts/s/keV)')
+    ax1.set_xscale('log')
+    ax1.set_yscale('log')
+    ax1.legend()
+    ax1.set_title(f"X-ray Spectral Fit Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    ax1.grid(True, which='both', linestyle='--', alpha=0.3)
+    
+    # Lower panel: Residuals
+    ax2 = fig.add_subplot(gs[1], sharex=ax1)
+    ax2.errorbar(energy, residuals, yerr=1.0, fmt='k.', markersize=3, alpha=0.6) # error is 1 sigma normalized
+    ax2.axhline(0, color='r', linestyle='--')
+    ax2.set_ylabel('Residuals (σ)')
+    ax2.set_xlabel('Energy (keV)')
+    ax2.set_ylim(-5, 5) # Typical sigma range
+    ax2.grid(True, which='both', linestyle='--', alpha=0.3)
+    
+    # Parameters Text Box (Right side or Bottom overlay)
+    # We will place it inside the plot area for compactness or adjust layout
+    param_str = f"Chi-Squared/dof: {chi2_dof:.4f}\n\nBest Fit Parameters:\n"
+    for k, v in best_params.items():
+        param_str += f"{k}: {v:.4f}\n"
+    
+    # Add text to the upper plot
+    props = dict(boxstyle='round', facecolor='white', alpha=0.8)
+    ax1.text(0.98, 0.98, param_str, transform=ax1.transAxes, fontsize=9,
+            verticalalignment='top', horizontalalignment='right', bbox=props)
+            
+    plt.tight_layout()
+    
+    # Save to buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
 st.set_page_config(page_title="X-ray Spectrum Analyzer", layout="wide")
 
@@ -46,6 +97,128 @@ def fits_table_to_dataframe(fits_data, max_rows=None):
     return pd.DataFrame(data_dict)
 
 
+st.set_page_config(page_title="X-ray Spectrum Analyzer", layout="wide")
+
+# ==========================================
+# PAGE RENDERERS
+# ==========================================
+
+def render_image_viewer():
+    st.title("🖼️ FITS Image Viewer")
+    st.markdown("### ดูรูปภาพ 2D Photon Map (epic_*.img.fits)")
+    
+    uploaded_file = st.file_uploader("เลือกไฟล์ FITS Image (.img.fits)", type=["fits", "img"])
+    if uploaded_file:
+        try:
+            with fits.open(uploaded_file) as hdul:
+                # Typically extensions[0] is primary image
+                image_data = hdul[0].data
+                
+                # Basic check
+                if image_data is None:
+                    st.error("ไม่พบข้อมูลรูปภาพใน Extension [0]")
+                    return
+
+                # Byte Fix
+                image_data = fix_byte_order(image_data)
+
+                # Controls
+                col1, col2 = st.columns(2)
+                scale_type = col1.radio("Scale", ["Linear", "Logarithmic"], horizontal=True)
+                cmap_name = col2.selectbox("Colormap", ["inferno", "viridis", "gray", "plasma"], index=0)
+
+                # Plot
+                fig, ax = plt.subplots(figsize=(8, 8))
+                
+                plot_data = image_data
+                if scale_type == "Logarithmic":
+                    from matplotlib.colors import LogNorm
+                    norm = LogNorm(vmin=np.percentile(image_data[image_data > 0], 5), vmax=np.max(image_data))
+                    im = ax.imshow(plot_data, cmap=cmap_name, origin='lower', norm=norm)
+                else:
+                    im = ax.imshow(plot_data, cmap=cmap_name, origin='lower', vmin=0, vmax=np.percentile(image_data, 99))
+                
+                plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Counts")
+                ax.set_title(uploaded_file.name)
+                ax.set_xlabel("X (Physical Coordinates)")
+                ax.set_ylabel("Y (Physical Coordinates)")
+                
+                st.pyplot(fig)
+                st.info(f"Shape: {image_data.shape} | Max: {np.max(image_data)} | Min: {np.min(image_data)}")
+                
+        except Exception as e:
+            st.error(f"Error reading FITS: {e}")
+
+def render_lightcurve_viewer():
+    st.title("📈 Light Curve Viewer")
+    st.markdown("### ดูกราฟ Count Rate vs Time (rate_*.fits)")
+    
+    uploaded_file = st.file_uploader("เลือกไฟล์ Light Curve (.lc / .fits)", type=["lc", "fits"])
+    if uploaded_file:
+        try:
+            with fits.open(uploaded_file) as hdul:
+                # Find RATE table. Usually in extensions like 'RATE' or index 1
+                # Try to auto-detect table with TIME and RATE columns
+                target_ext = None
+                for ext in hdul:
+                    if isinstance(ext, fits.BinTableHDU) and 'TIME' in ext.columns.names and 'RATE' in ext.columns.names:
+                        target_ext = ext
+                        break
+                
+                if target_ext is None:
+                    # Fallback to index 1
+                    if len(hdul) > 1 and isinstance(hdul[1], fits.BinTableHDU):
+                         target_ext = hdul[1]
+                
+                if target_ext:
+                    df = fits_table_to_dataframe(target_ext.data)
+                    
+                    if 'TIME' in df.columns and 'RATE' in df.columns:
+                        # Normalize time to start at 0
+                        t0 = df['TIME'].min()
+                        df['Time (s)'] = df['TIME'] - t0
+                        
+                        # Plot
+                        fig = px.line(df, x='Time (s)', y='RATE', title=f"Light Curve: {uploaded_file.name}")
+                        fig.update_layout(xaxis_title="Time (s) (Offset)", yaxis_title="Count Rate (cts/s)")
+                        
+                        # Flaring threshold
+                        threshold = st.number_input("Flaring Threshold (cts/s)", value=0.4, step=0.05)
+                        fig.add_hline(y=threshold, line_dash="dash", line_color="red", annotation_text="Limit")
+                        
+                        # Highlight bad intervals
+                        bad_points = df[df['RATE'] > threshold]
+                        if not bad_points.empty:
+                            st.warning(f"⚠️ Found {len(bad_points)} points exceeding threshold {threshold} cts/s")
+                        else:
+                            st.success("✅ No flaring detected above threshold.")
+
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.error("Columns TIME and RATE not found.")
+                else:
+                    st.error("Could not find a valid BinTableHDU with TIME/RATE.")
+                    
+        except Exception as e:
+            st.error(f"Error reading LightCurve: {e}")
+
+# ==========================================
+# NAVIGATION & ROUTING
+# ==========================================
+st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Python-logo-notext.svg/1200px-Python-logo-notext.svg.png", width=50)
+st.sidebar.title("Navigation")
+nav_page = st.sidebar.radio("Go to:", ["📊 Spectral Fitting", "🖼️ Image Viewer", "📈 Light Curve Viewer"])
+
+if nav_page == "🖼️ Image Viewer":
+    render_image_viewer()
+    st.stop()
+elif nav_page == "📈 Light Curve Viewer":
+    render_lightcurve_viewer()
+    st.stop()
+
+# ==========================================
+# DEFAULT PAGE: SPECTRAL FITTING
+# ==========================================
 st.title("🔭 X-ray Spectrum Data Analyzer")
 st.markdown("### เครื่องมือวิเคราะห์ข้อมูลสเปกตรัม X-ray จาก XMM-Newton")
 
@@ -299,66 +472,95 @@ def plot_spectrum(hdul, title="Spectrum", show_options=True):
 
                     # Visualization options
                     if show_options:
-                        col_opt1, col_opt2, col_opt3 = st.columns(3)
-                        with col_opt1:
-                            use_log_y = st.checkbox(
-                                "ใช้ Logarithmic Scale (แกน Y)",
-                                value=False,
-                                key=f"log_{title}")
-                        with col_opt2:
-                            show_errors = st.checkbox("แสดง Error Bars",
-                                                      value=False,
-                                                      key=f"err_{title}")
-                        with col_opt3:
-                            show_markers = st.checkbox("แสดง Markers",
-                                                       value=False,
-                                                       key=f"mkr_{title}")
+                        with st.expander("🛠️ ตัวเลือกกราฟ (Chart Options)", expanded=True):
+                            col_opt1, col_opt2, col_opt3 = st.columns(3)
+                            with col_opt1:
+                                st.markdown("**1. รูปแบบกราฟ (Chart Type)**")
+                                plot_type = st.radio(
+                                    "เลือกรูปแบบ:", 
+                                    ["Line Chart (เส้น)", "Bar Chart (แท่ง)"], 
+                                    key=f"type_{title}")
+                            with col_opt2:
+                                st.markdown("**2. ปรับแกน (Axes Scales)**")
+                                col_ax1, col_ax2 = st.columns(2)
+                                with col_ax1:
+                                    x_scale = st.checkbox("Log X", value=False, key=f"log_x_{title}")
+                                with col_ax2:
+                                    y_scale = st.checkbox("Log Y", value=False, key=f"log_y_{title}")
+                            with col_opt3:
+                                st.markdown("**3. ตัวเลือกเพิ่มเติม**")
+                                show_errors = st.checkbox("แสดง Error Bars", value=False, key=f"err_{title}")
+                                show_markers = st.checkbox("แสดง Markers", value=False, key=f"mkr_{title}")
+                                swap_axes = st.checkbox("🔄 สลับแกน X-Y", value=False, key=f"swap_{title}")
                     else:
-                        use_log_y = False
+                        plot_type = "Line Chart (เส้น)"
+                        x_scale = False
+                        y_scale = False
                         show_errors = False
                         show_markers = False
+                        swap_axes = False
 
-                    # Calculate error bars (Poisson statistics: error = sqrt(counts))
-                    if show_errors:
-                        errors = np.sqrt(np.maximum(
-                            counts, 0))  # Avoid sqrt of negative
+                    # Calculate error bars
+                    errors = np.sqrt(np.maximum(counts, 0)) if show_errors else None
 
                     fig = go.Figure()
-
-                    if show_errors:
-                        fig.add_trace(
-                            go.Scatter(x=channels,
-                                       y=counts,
-                                       mode='lines+markers'
-                                       if show_markers else 'lines',
-                                       name='Counts',
-                                       line=dict(width=1.5),
-                                       error_y=dict(type='data',
-                                                    array=errors,
-                                                    visible=True,
-                                                    color='rgba(0,0,0,0.3)')))
+                    
+                    # Prepare Data based on Swap Axes
+                    if swap_axes:
+                        x_data = counts
+                        y_data = channels
+                        x_title = "Counts"
+                        y_title = "Channel"
                     else:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=channels,
-                                y=counts,
-                                mode='lines+markers'
-                                if show_markers else 'lines',
+                        x_data = channels
+                        y_data = counts
+                        x_title = "Channel"
+                        y_title = "Counts"
+
+                    # Add Trace
+                    if "Bar Chart" in plot_type:
+                        if swap_axes:
+                            # Horizontal Bar
+                            fig.add_trace(go.Bar(
+                                x=x_data, y=y_data,
+                                orientation='h',
                                 name='Counts',
-                                line=dict(width=1.5),
-                                marker=dict(size=3) if show_markers else None))
+                                marker_color='#1f77b4',
+                                error_x=dict(type='data', array=errors, visible=True) if show_errors else None
+                            ))
+                        else:
+                            # Vertical Bar
+                            fig.add_trace(go.Bar(
+                                x=x_data, y=y_data,
+                                name='Counts',
+                                marker_color='#1f77b4',
+                                error_y=dict(type='data', array=errors, visible=True) if show_errors else None
+                            ))
+                    else:
+                        # Line Chart
+                        fig.add_trace(go.Scatter(
+                            x=x_data, y=y_data,
+                            mode='lines+markers' if show_markers else 'lines',
+                            name='Counts',
+                            line=dict(width=1.5),
+                            marker=dict(size=3) if show_markers else None,
+                            error_x=dict(type='data', array=errors, visible=True, color='rgba(0,0,0,0.3)') if (show_errors and swap_axes) else None,
+                            error_y=dict(type='data', array=errors, visible=True, color='rgba(0,0,0,0.3)') if (show_errors and not swap_axes) else None
+                        ))
 
-                    yaxis_type = 'log' if use_log_y else 'linear'
+                    # Layout
+                    fig.update_layout(
+                        title=title,
+                        xaxis_title=x_title,
+                        yaxis_title=y_title,
+                        xaxis_type='log' if x_scale else 'linear',
+                        yaxis_type='log' if y_scale else 'linear',
+                        hovermode='y unified' if swap_axes else 'x unified',
+                        template='plotly_white',
+                        height=500
+                    )
 
-                    fig.update_layout(title=title,
-                                      xaxis_title="Channel",
-                                      yaxis_title="Counts" +
-                                      (" (log scale)" if use_log_y else ""),
-                                      yaxis_type=yaxis_type,
-                                      hovermode='x unified',
-                                      template='plotly_white')
-
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig, use_container_width=True)
 
                     # Display statistics
                     col1, col2, col3, col4 = st.columns(4)
@@ -787,7 +989,7 @@ if upload_option == "ใช้ไฟล์ที่แนบมา":
         tabs = st.tabs([
             "📊 Source Spectrum", "🌌 Background Spectrum",
             "🔬 Background Subtraction", "📈 ARF File", "🔲 RMF File",
-            "🎯 Spectral Fitting Analysis"
+            "🎯 Spectral Fitting Analysis", "🌟 X-ray Components"
         ])
 
         # Tab 1: Source Spectrum
@@ -1742,6 +1944,50 @@ if upload_option == "ใช้ไฟล์ที่แนบมา":
                                         final_result['fixed_params'] = fixed_params
                                         if save_brute_force_result(final_result):
                                             st.success("💾 บันทึกผลลัพธ์ไปยังไฟล์ JSON แล้ว!")
+
+                                        # Generate Report Image
+                                        st.markdown("### 📸 บันทึกผลเป็นรูปภาพ (Save Report)")
+                                        if st.button("Generate Report Image"):
+                                            try:
+                                                # Recalculate Model & Residuals for the plot
+                                                best_p = final_result['best_params']
+                                                # Merge with fixed params if any
+                                                full_params = best_p.copy()
+                                                if fixed_params:
+                                                    full_params.update(fixed_params)
+                                                    
+                                                model_flux = sm.combined_model(energy, full_params, model_components)
+                                                
+                                                # Use effective arf if available (from earlier)
+                                                effective_arf = sf.prepare_effective_arf(arf_filtered, energy)
+                                                if effective_arf is not None:
+                                                    model_rate_plot = model_flux * effective_arf
+                                                else:
+                                                    model_rate_plot = model_flux
+                                                    
+                                                # Residuals
+                                                mask = observed_error > 0
+                                                resid = np.zeros_like(observed_rate)
+                                                resid[mask] = (observed_rate[mask] - model_rate_plot[mask]) / observed_error[mask]
+                                                
+                                                # Generate Image
+                                                img_buffer = generate_report_image(
+                                                    energy, observed_rate, observed_error, 
+                                                    model_rate_plot, resid, 
+                                                    final_result['best_chi2_dof'], 
+                                                    best_p, model_components
+                                                )
+                                                
+                                                st.download_button(
+                                                    label="⬇️ Download Report Image",
+                                                    data=img_buffer,
+                                                    file_name=f"fit_report_{run_id}.png",
+                                                    mime="image/png"
+                                                )
+                                                st.success("✅ สร้างรูปภาพสำเร็จ! กดปุ่ม Download ด้านบนได้เลย")
+                                                
+                                            except Exception as e:
+                                                st.error(f"❌ สร้างรูปภาพไม่สำเร็จ: {e}")
                             else:
                                 st.error("❌ ไม่สามารถอ่านไฟล์ข้อมูลได้")
                                 
@@ -1766,33 +2012,26 @@ if upload_option == "ใช้ไฟล์ที่แนบมา":
                                     st.error("❌ ไม่สามารถอ่านไฟล์ข้อมูลได้")
                                 else:
                                     # Prepare data for fitting
-                                    # Use energy from ARF
                                     energy = arf_data.energy_mid
-                                    
-                                    # Get count rate and errors
                                     observed_rate = spectrum.count_rate()
                                     observed_error = spectrum.count_rate_error()
                                     
-                                    # Ensure compatible lengths
                                     min_len = min(len(energy), len(observed_rate))
                                     energy = energy[:min_len]
                                     observed_rate = observed_rate[:min_len]
                                     observed_error = observed_error[:min_len]
                                     
-                                    # Filter energy range using user-selected values
                                     energy_mask = (energy > energy_min) & (energy < energy_max)
                                     energy = energy[:min_len][energy_mask]
                                     observed_rate = observed_rate[:min_len][energy_mask]
                                     observed_error = observed_error[:min_len][energy_mask]
                                     
-                                    # Filter ARF data to match energy range
                                     arf_data_filtered = sf.ResponseData()
                                     arf_data_filtered.energy_lo = arf_data.energy_lo[:min_len][energy_mask]
                                     arf_data_filtered.energy_hi = arf_data.energy_hi[:min_len][energy_mask]
                                     arf_data_filtered.energy_mid = energy
                                     arf_data_filtered.arf = arf_data.arf[:min_len][energy_mask]
                                     
-                                    # Perform fitting with ARF response
                                     fit_result = sf.fit_spectrum(
                                         energy, observed_rate, observed_error,
                                         model_components, initial_params,
@@ -1800,7 +2039,33 @@ if upload_option == "ใช้ไฟล์ที่แนบมา":
                                         response=arf_data_filtered
                                     )
                                     
-                                    # Display results
+                                    if fit_result['success']:
+                                        st.session_state['fit_results_att'] = {
+                                            'fit_result': fit_result,
+                                            'energy': energy,
+                                            'observed_rate': observed_rate,
+                                            'observed_error': observed_error,
+                                            'model_components': model_components,
+                                            'arf_data_filtered': arf_data_filtered
+                                        }
+                                        st.success("✅ การฟิตสำเร็จ!")
+                                    else:
+                                        st.error(f"❌ การฟิตล้มเหลว: {fit_result.get('message', 'Unknown error')}")
+
+                            except Exception as e:
+                                st.error(f"❌ เกิดข้อผิดพลาด: {e}")
+
+                    # Display results from Session State
+                    if 'fit_results_att' in st.session_state:
+                        res = st.session_state['fit_results_att']
+                        fit_result = res['fit_result']
+                        energy = res['energy']
+                        observed_rate = res['observed_rate']
+                        observed_error = res['observed_error']
+                        model_components = res['model_components']
+                        arf_data_filtered = res['arf_data_filtered']
+
+                        if True:
                                     st.markdown("---")
                                     st.markdown("## 📊 ผลการฟิตสเปกตรัม")
                                     
@@ -1854,23 +2119,83 @@ if upload_option == "ใช้ไฟล์ที่แนบมา":
                                         # Plot: Data and Model
                                         st.markdown("### 📉 Spectrum และ Best-fit Model")
                                         
-                                        fig = go.Figure()
+                                        # Chart Options
+                                        with st.expander("🛠️ ตัวเลือกกราฟ (Chart Options)", expanded=False):
+                                            col_fit_opt1, col_fit_opt2, col_fit_opt3 = st.columns(3)
+                                            with col_fit_opt1:
+                                                fit_plot_type = st.radio("รูปแบบกราฟ:", ["Lines+Markers", "Bar Chart"], key="fit_type_att")
+                                            with col_fit_opt2:
+                                                col_ax1, col_ax2 = st.columns(2)
+                                                with col_ax1:
+                                                    fit_log_x = st.checkbox("Log X Scale", value=False, key="fit_log_x_att")
+                                                with col_ax2:
+                                                    fit_log_y = st.checkbox("Log Y Scale", value=True, key="fit_log_y_att") # Default log Y
+                                            with col_fit_opt3:
+                                                fit_swap_axes = st.checkbox("🔄 สลับแกน X-Y", value=False, key="fit_swap_att")
                                         
-                                        # Observed data with error bars
-                                        fig.add_trace(go.Scatter(
-                                            x=energy,
-                                            y=observed_rate,
-                                            error_y=dict(type='data', array=observed_error, visible=True),
-                                            mode='markers',
-                                            name='Observed Data',
-                                            marker=dict(size=4, color='blue'),
-                                            line=dict(width=0)
-                                        ))
+                                        fig = go.Figure()
+
+                                        # Prepare Data based on Swap
+                                        if fit_swap_axes:
+                                            x_data = observed_rate
+                                            y_data = energy
+                                            x_model = model_rate
+                                            y_model = energy
+                                            x_title = "Count Rate (counts/s/keV)"
+                                            y_title = "Energy (keV)"
+                                        else:
+                                            x_data = energy
+                                            y_data = observed_rate
+                                            x_model = energy
+                                            y_model = model_rate
+                                            x_title = "Energy (keV)"
+                                            y_title = "Count Rate (counts/s/keV)"
+                                        
+                                        # Plot Data based on type
+                                        if "Bar" in fit_plot_type:
+                                            if fit_swap_axes:
+                                                # Horizontal Bar
+                                                fig.add_trace(go.Bar(
+                                                    x=x_data, y=y_data, orientation='h',
+                                                    name='Observed Data',
+                                                    marker_color='#1f77b4',
+                                                    error_x=dict(type='data', array=observed_error, visible=True),
+                                                    opacity=0.6
+                                                ))
+                                            else:
+                                                # Vertical Bar
+                                                fig.add_trace(go.Bar(
+                                                    x=x_data, y=y_data,
+                                                    name='Observed Data',
+                                                    marker_color='#1f77b4',
+                                                    error_y=dict(type='data', array=observed_error, visible=True),
+                                                    opacity=0.6
+                                                ))
+                                        else:
+                                            # Scatter
+                                            if fit_swap_axes:
+                                                fig.add_trace(go.Scatter(
+                                                    x=x_data, y=y_data,
+                                                    error_x=dict(type='data', array=observed_error, visible=True),
+                                                    mode='markers',
+                                                    name='Observed Data',
+                                                    marker=dict(size=4, color='blue'),
+                                                    line=dict(width=0)
+                                                ))
+                                            else:
+                                                fig.add_trace(go.Scatter(
+                                                    x=x_data, y=y_data,
+                                                    error_y=dict(type='data', array=observed_error, visible=True),
+                                                    mode='markers',
+                                                    name='Observed Data',
+                                                    marker=dict(size=4, color='blue'),
+                                                    line=dict(width=0)
+                                                ))
                                         
                                         # Best-fit model
                                         fig.add_trace(go.Scatter(
-                                            x=energy,
-                                            y=model_rate,
+                                            x=x_model,
+                                            y=y_model,
                                             mode='lines',
                                             name='Best-fit Model',
                                             line=dict(width=2, color='red')
@@ -1878,15 +2203,17 @@ if upload_option == "ใช้ไฟล์ที่แนบมา":
                                         
                                         fig.update_layout(
                                             title="Spectrum with Best-fit Model",
-                                            xaxis_title="Energy (keV)",
-                                            yaxis_title="Count Rate (counts/s/keV)",
-                                            yaxis_type="log",
+                                            xaxis_title=x_title,
+                                            yaxis_title=y_title,
+                                            xaxis_type='log' if fit_log_x else 'linear',
+                                            yaxis_type='log' if fit_log_y else 'linear',
                                             hovermode='x unified',
                                             template='plotly_white',
-                                            height=500
+                                            height=500,
+                                            bargap=0.0 # Dense bars
                                         )
                                         
-                                        st.plotly_chart(fig, width='stretch')
+                                        st.plotly_chart(fig, use_container_width=True)
                                         
                                         # Plot: Residuals
                                         st.markdown("### 📊 Residuals (ค่าเหลือจากการฟิต)")
@@ -2093,10 +2420,7 @@ if upload_option == "ใช้ไฟล์ที่แนบมา":
                                         st.error(f"❌ การฟิตล้มเหลว: {fit_result.get('message', 'Unknown error')}")
                                         st.info("ลองปรับค่าพารามิเตอร์เริ่มต้นหรือเปลี่ยน model components")
                             
-                            except Exception as e:
-                                st.error(f"❌ เกิดข้อผิดพลาด: {e}")
-                                import traceback
-                                st.code(traceback.format_exc())
+                            # End of display block
             
             else:
                 st.warning("⚠️ ต้องมีทั้ง Source Spectrum และ ARF File เพื่อทำการฟิต")
@@ -2104,6 +2428,297 @@ if upload_option == "ใช้ไฟล์ที่แนบมา":
                     st.info("ไม่พบไฟล์ Source Spectrum")
                 if not arf_files:
                     st.info("ไม่พบไฟล์ ARF")
+        
+        # Tab 7: X-ray Components
+        with tabs[6]:
+            st.subheader("🌟 X-ray Component Analysis")
+            st.markdown("""
+            แสดงค่าองค์ประกอบสเปกตรัม X-ray:
+            - **X-ray Continuum**: รังสีเอกซ์จาก Corona (Power-law) - เกิดจาก Comptonization ของโฟตอนใน hot corona
+            - **X-ray Reflection**: รังสีเอกซ์ที่สะท้อนจากจานพอกพูนมวล (Accretion Disk) - รวม Compton hump และ iron line
+            """)
+            
+            st.markdown("---")
+            
+            # Parameter inputs
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.markdown("**🔥 Corona Continuum (Power-law)**")
+                xray_pl_norm_att = st.number_input("Normalization", value=0.01, min_value=0.0001, max_value=10.0, format="%.4f", key="xray_pl_norm_att")
+                xray_photon_index_att = st.slider("Photon Index (Γ)", 1.0, 3.0, 2.0, 0.1, key="xray_gamma_att")
+            with col2:
+                st.markdown("**💿 Disk Reflection**")
+                xray_refl_norm_att = st.slider("Reflection Fraction", 0.0, 2.0, 0.5, 0.1, key="xray_refl_att")
+            with col3:
+                st.markdown("**⚡ Energy Range**")
+                xray_e_min_att = st.number_input("E_min (keV)", value=0.3, min_value=0.1, max_value=5.0, key="xray_emin_att")
+                xray_e_max_att = st.number_input("E_max (keV)", value=10.0, min_value=1.0, max_value=100.0, key="xray_emax_att")
+            
+            # Generate energy array and compute models
+            xray_energy_att = np.logspace(np.log10(xray_e_min_att), np.log10(xray_e_max_att), 200)
+            xray_continuum_att = sm.powerlaw(xray_energy_att, xray_pl_norm_att, xray_photon_index_att)
+            xray_reflection_att = sm.reflection_component(xray_energy_att, xray_refl_norm_att, xray_photon_index_att)
+            xray_total_att = xray_continuum_att + xray_reflection_att
+            
+            # Create plot
+            fig_xray_att = go.Figure()
+            fig_xray_att.add_trace(go.Scatter(
+                x=xray_energy_att, y=xray_continuum_att,
+                name='Corona Continuum (Power-law)',
+                line=dict(color='#2196F3', width=2)
+            ))
+            fig_xray_att.add_trace(go.Scatter(
+                x=xray_energy_att, y=xray_reflection_att,
+                name='Disk Reflection',
+                line=dict(color='#FF9800', width=2)
+            ))
+            fig_xray_att.add_trace(go.Scatter(
+                x=xray_energy_att, y=xray_total_att,
+                name='Total Flux',
+                line=dict(color='#4CAF50', width=2, dash='dash')
+            ))
+            fig_xray_att.update_layout(
+                title="X-ray Spectral Components",
+                xaxis_title="Energy (keV)",
+                yaxis_title="Flux (photons/cm²/s/keV)",
+                xaxis_type="log",
+                yaxis_type="log",
+                template='plotly_white',
+                legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
+                height=500
+            )
+            st.plotly_chart(fig_xray_att, use_container_width=True)
+            
+            # Display component values
+            st.markdown("### 📊 Component Flux Values")
+            col_val1, col_val2, col_val3 = st.columns(3)
+            with col_val1:
+                st.metric("Corona Flux (at 1 keV)", f"{sm.powerlaw(np.array([1.0]), xray_pl_norm_att, xray_photon_index_att)[0]:.4e}")
+            with col_val2:
+                st.metric("Reflection Flux (at 1 keV)", f"{sm.reflection_component(np.array([1.0]), xray_refl_norm_att, xray_photon_index_att)[0]:.4e}")
+            with col_val3:
+                refl_ratio_att = xray_refl_norm_att / xray_pl_norm_att if xray_pl_norm_att > 0 else 0
+                st.metric("Reflection/Continuum Ratio", f"{refl_ratio_att:.2f}")
+            
+            # Physical interpretation
+            with st.expander("📖 การตีความทางฟิสิกส์"):
+                st.markdown(f"""
+                **สรุปองค์ประกอบสเปกตรัม:**
+                
+                1. **Corona Continuum (Power-law)**
+                   - Photon Index Γ = {xray_photon_index_att:.2f}
+                   - {'Soft spectrum (Γ > 2.0): Corona กำลังเย็นตัวลง' if xray_photon_index_att > 2.0 else 'Hard spectrum (Γ < 2.0): Corona ร้อนมาก'}
+                
+                2. **Disk Reflection**
+                   - Reflection Fraction = {xray_refl_norm_att:.2f}
+                   - {'Strong reflection: จานสะท้อนแสงได้ดี อาจหมายถึง geometry ที่ใกล้หลุมดำ' if xray_refl_norm_att > 1.0 else 'Moderate/Weak reflection: reflection พอประมาณ'}
+                
+                3. **Total Spectrum**
+                   - ที่พลังงานต่ำ (< 2 keV): Reflection มีผลกระทบมาก
+                   - ที่พลังงานสูง (> 10 keV): Compton hump จาก reflection จะเด่นขึ้น
+                """)
+            
+            # === Fitting Section ===
+            st.markdown("---")
+            st.markdown("### 🔧 Fitting with Observed Data")
+            
+            # Check if we have the necessary data for fitting
+            if source_files and arf_files:
+                st.info("✅ พบข้อมูล Spectrum และ ARF - สามารถทำ Fitting ได้")
+                
+                # Select files for fitting
+                col_fit1, col_fit2 = st.columns(2)
+                with col_fit1:
+                    fit_source = st.selectbox("เลือก Source Spectrum:", source_files, key="xray_fit_source")
+                with col_fit2:
+                    fit_arf = st.selectbox("เลือก ARF:", arf_files, key="xray_fit_arf")
+                
+                # Explanations
+                with st.expander("📖 Auto-fit (Optimization) คืออะไร?"):
+                    st.markdown("""
+                    **Auto-fit** ใช้ **Scipy L-BFGS-B Optimization** เพื่อหาพารามิเตอร์ที่ minimize χ²:
+                    
+                    **ขั้นตอน:**
+                    1. เริ่มจากค่าพารามิเตอร์ปัจจุบันที่เลือก
+                    2. คำนวณ gradient ของ χ² (ความชันของฟังก์ชัน)
+                    3. ปรับค่าพารามิเตอร์ไปตามทิศทางที่ลด χ²
+                    4. ทำซ้ำจนกว่า χ² จะไม่ลดลงอีก
+                    
+                    **ข้อดี:** เร็วมาก (< 1 วินาที)
+                    **ข้อเสีย:** อาจติด local minimum ถ้าค่าเริ่มต้นไม่ดี
+                    
+                    **สูตร χ²:**
+                    ```
+                    χ² = Σ [(observed - predicted)² / error²]
+                    ```
+                    """)
+                
+                with st.expander("📖 Brute Force (Grid Search) คืออะไร?"):
+                    st.markdown("""
+                    **Brute Force** ลองทุก combination ของพารามิเตอร์ในช่วงที่กำหนด:
+                    
+                    **ขั้นตอน:**
+                    1. แบ่งช่วงของแต่ละพารามิเตอร์เป็น N steps
+                    2. สร้าง grid ของทุก combination ที่เป็นไปได้
+                    3. คำนวณ χ² สำหรับทุก combination
+                    4. เลือก combination ที่ให้ χ² ต่ำสุด
+                    
+                    **ตัวอย่าง:** ถ้ามี 3 parameters และ 5 steps ต่อ parameter
+                    → ต้องลอง 5 × 5 × 5 = 125 combinations
+                    
+                    **ข้อดี:** หา global minimum ได้ (ไม่ติด local minimum)
+                    **ข้อเสีย:** ช้ากว่า Auto-fit มาก
+                    """)
+                
+                # Fitting buttons
+                col_btn1, col_btn2 = st.columns(2)
+                
+                # Helper class for response (fix for Auto-fit)
+                class SimpleResponse:
+                    def __init__(self, arf):
+                        self.arf = arf
+                        self.energy_lo = None
+                        self.energy_hi = None
+                
+                with col_btn1:
+                    if st.button("🎯 Auto-fit (Fast)", key="autofit_att"):
+                        with st.spinner("กำลัง Auto-fit..."):
+                            try:
+                                # Load data
+                                source_hdul = fits.open(attached_files[fit_source])
+                                arf_hdul = fits.open(attached_files[fit_arf])
+                                
+                                # Get spectrum data
+                                source_data = source_hdul[1].data
+                                channels = source_data['CHANNEL']
+                                counts = source_data['COUNTS']
+                                exposure = source_hdul[1].header.get('EXPOSURE', 1.0)
+                                
+                                # Get ARF data
+                                arf_data = arf_hdul[1].data
+                                energy_lo = arf_data['ENERG_LO']
+                                energy_hi = arf_data['ENERG_HI']
+                                specresp = arf_data['SPECRESP']
+                                energy = (energy_lo + energy_hi) / 2.0
+                                
+                                # Match data to energy
+                                min_len = min(len(channels), len(energy))
+                                observed_rate = counts[:min_len] / exposure
+                                observed_error = np.sqrt(np.maximum(counts[:min_len], 1)) / exposure
+                                energy_fit = energy[:min_len]
+                                arf_fit = specresp[:min_len]
+                                
+                                # Create response object
+                                response_obj = SimpleResponse(arf_fit)
+                                
+                                # Current parameters as initial guess
+                                initial_params = {
+                                    'pl_norm': xray_pl_norm_att,
+                                    'photon_index': xray_photon_index_att,
+                                    'refl_norm': xray_refl_norm_att
+                                }
+                                
+                                # Fit
+                                result = sf.fit_spectrum(
+                                    energy_fit, observed_rate, observed_error,
+                                    ['powerlaw', 'reflection'], initial_params,
+                                    response=response_obj
+                                )
+                                
+                                if result['success']:
+                                    st.success(f"✅ Auto-fit สำเร็จ! χ²/dof = {result['reduced_chi_squared']:.3f}")
+                                    st.markdown("**Best-fit Parameters:**")
+                                    for p, v in result['best_params'].items():
+                                        st.write(f"- {p}: {v:.4f}")
+                                else:
+                                    st.error(f"❌ Auto-fit ล้มเหลว: {result.get('message', 'Unknown error')}")
+                                
+                                source_hdul.close()
+                                arf_hdul.close()
+                                
+                            except Exception as e:
+                                st.error(f"❌ Error: {e}")
+                
+                with col_btn2:
+                    bf_steps = st.slider("Brute Force Steps", 3, 10, 5, key="bf_steps_att")
+                    if st.button("🔎 Brute Force (Thorough)", key="bruteforce_att"):
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        try:
+                            # Load data
+                            source_hdul = fits.open(attached_files[fit_source])
+                            arf_hdul = fits.open(attached_files[fit_arf])
+                            
+                            # Get spectrum data
+                            source_data = source_hdul[1].data
+                            channels = source_data['CHANNEL']
+                            counts = source_data['COUNTS']
+                            exposure = source_hdul[1].header.get('EXPOSURE', 1.0)
+                            
+                            # Get ARF data
+                            arf_data = arf_hdul[1].data
+                            energy_lo = arf_data['ENERG_LO']
+                            energy_hi = arf_data['ENERG_HI']
+                            specresp = arf_data['SPECRESP']
+                            energy = (energy_lo + energy_hi) / 2.0
+                            
+                            # Match data to energy
+                            min_len = min(len(channels), len(energy))
+                            observed_rate = counts[:min_len] / exposure
+                            observed_error = np.sqrt(np.maximum(counts[:min_len], 1)) / exposure
+                            energy_fit = energy[:min_len]
+                            arf_fit = specresp[:min_len]
+                            
+                            # Create response object
+                            response_obj = SimpleResponse(arf_fit)
+                            
+                            # Parameter ranges (wide enough to find global min)
+                            param_ranges = {
+                                'pl_norm': (0.001, 0.1),
+                                'photon_index': (1.5, 2.5),
+                                'refl_norm': (0.0, 2.0)
+                            }
+                            
+                            # Brute force fit (Generator)
+                            generator = sf.brute_force_fit(
+                                energy_fit, observed_rate, observed_error,
+                                ['powerlaw', 'reflection'], param_ranges,
+                                n_steps=bf_steps, response=response_obj
+                            )
+                            
+                            final_result = None
+                            
+                            for status in generator:
+                                progress = status['progress']
+                                progress_bar.progress(progress)
+                                
+                                current_best = status.get('best_chi2_dof', float('inf'))
+                                status_text.markdown(f"""
+                                **Status:** {status.get('description', '')}
+                                - Iteration: {status.get('iteration')} / {status.get('total')}
+                                - Best χ²/dof so far: `{current_best:.4f}`
+                                """)
+                                
+                                if status['status'] == 'complete':
+                                    final_result = status
+                            
+                            if final_result:
+                                st.success(f"✅ Brute Force สำเร็จ! χ²/dof = {final_result['best_chi2_dof']:.3f}")
+                                st.markdown("**Best-fit Parameters:**")
+                                for p, v in final_result['best_params'].items():
+                                    st.write(f"- {p}: {v:.4f}")
+                                st.caption(f"ทดสอบ {final_result['total']:,} combinations")
+                            
+                            source_hdul.close()
+                            arf_hdul.close()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
+            else:
+                st.warning("⚠️ ต้องมี Source Spectrum และ ARF เพื่อทำ Fitting")
     
     else:
         st.warning("ไม่พบไฟล์ที่แนบมา กรุณาอัพโหลดไฟล์ใหม่")
@@ -2121,7 +2736,8 @@ else:  # Upload new files
     # Create tabs for uploaded files
     tabs = st.tabs([
         "📊 Source Spectrum", "🌌 Background Spectrum",
-        "🔬 Background Subtraction", "📈 ARF File", "🔲 RMF File"
+        "🔬 Background Subtraction", "📈 ARF File", "🔲 RMF File",
+        "🌟 X-ray Components"
     ])
 
     with tabs[0]:
@@ -2222,6 +2838,287 @@ else:  # Upload new files
     with tabs[4]:
         if uploaded_rmf:
             plot_rmf(uploaded_rmf)
+
+    with tabs[5]:
+        st.subheader("🌟 X-ray Component Analysis")
+        st.markdown("""
+        แสดงค่าองค์ประกอบสเปกตรัม X-ray:
+        - **X-ray Continuum**: รังสีเอกซ์จาก Corona (Power-law) - เกิดจาก Comptonization ของโฟตอนใน hot corona
+        - **X-ray Reflection**: รังสีเอกซ์ที่สะท้อนจากจานพอกพูนมวล (Accretion Disk) - รวม Compton hump และ iron line
+        """)
+        
+        st.markdown("---")
+        
+        # Parameter inputs
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("**🔥 Corona Continuum (Power-law)**")
+            xray_pl_norm = st.number_input("Normalization", value=0.01, min_value=0.0001, max_value=10.0, format="%.4f", key="xray_pl_norm")
+            xray_photon_index = st.slider("Photon Index (Γ)", 1.5, 3.0, 2.0, 0.1, key="xray_gamma")
+        with col2:
+            st.markdown("**💿 Disk Reflection**")
+            xray_refl_norm = st.slider("Reflection Fraction", 0.0, 2.0, 0.5, 0.1, key="xray_refl")
+        with col3:
+            st.markdown("**⚡ Energy Range**")
+            xray_e_min = st.number_input("E_min (keV)", value=0.3, min_value=0.1, max_value=5.0, key="xray_emin")
+            xray_e_max = st.number_input("E_max (keV)", value=10.0, min_value=1.0, max_value=100.0, key="xray_emax")
+        
+        # Generate energy array and compute models
+        xray_energy = np.logspace(np.log10(xray_e_min), np.log10(xray_e_max), 200)
+        xray_continuum = sm.powerlaw(xray_energy, xray_pl_norm, xray_photon_index)
+        xray_reflection = sm.reflection_component(xray_energy, xray_refl_norm, xray_photon_index)
+        xray_total = xray_continuum + xray_reflection
+        
+        # Create plot
+        fig_xray = go.Figure()
+        fig_xray.add_trace(go.Scatter(
+            x=xray_energy, y=xray_continuum,
+            name='Corona Continuum (Power-law)',
+            line=dict(color='#2196F3', width=2)
+        ))
+        fig_xray.add_trace(go.Scatter(
+            x=xray_energy, y=xray_reflection,
+            name='Disk Reflection',
+            line=dict(color='#FF9800', width=2)
+        ))
+        fig_xray.add_trace(go.Scatter(
+            x=xray_energy, y=xray_total,
+            name='Total Flux',
+            line=dict(color='#4CAF50', width=2, dash='dash')
+        ))
+        fig_xray.update_layout(
+            title="X-ray Spectral Components",
+            xaxis_title="Energy (keV)",
+            yaxis_title="Flux (photons/cm²/s/keV)",
+            xaxis_type="log",
+            yaxis_type="log",
+            template='plotly_white',
+            legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
+            height=500
+        )
+        st.plotly_chart(fig_xray, use_container_width=True)
+        
+        # Display component values
+        st.markdown("### 📊 Component Flux Values")
+        col_val1, col_val2, col_val3 = st.columns(3)
+        with col_val1:
+            st.metric("Corona Flux (at 1 keV)", f"{sm.powerlaw(np.array([1.0]), xray_pl_norm, xray_photon_index)[0]:.4e}")
+        with col_val2:
+            st.metric("Reflection Flux (at 1 keV)", f"{sm.reflection_component(np.array([1.0]), xray_refl_norm, xray_photon_index)[0]:.4e}")
+        with col_val3:
+            refl_ratio = xray_refl_norm / xray_pl_norm if xray_pl_norm > 0 else 0
+            st.metric("Reflection/Continuum Ratio", f"{refl_ratio:.2f}")
+        
+        # Physical interpretation
+        with st.expander("📖 การตีความทางฟิสิกส์"):
+            st.markdown(f"""
+            **สรุปองค์ประกอบสเปกตรัม:**
+            
+            1. **Corona Continuum (Power-law)**
+               - Photon Index Γ = {xray_photon_index:.2f}
+               - {'Soft spectrum (Γ > 2.0): Corona กำลังเย็นตัวลง' if xray_photon_index > 2.0 else 'Hard spectrum (Γ < 2.0): Corona ร้อนมาก'}
+            
+            2. **Disk Reflection**
+               - Reflection Fraction = {xray_refl_norm:.2f}
+               - {'Strong reflection: จานสะท้อนแสงได้ดี อาจหมายถึง geometry ที่ใกล้หลุมดำ' if xray_refl_norm > 1.0 else 'Moderate/Weak reflection: reflection พอประมาณ'}
+            
+            3. **Total Spectrum**
+               - ที่พลังงานต่ำ (< 2 keV): Reflection มีผลกระทบมาก
+               - ที่พลังงานสูง (> 10 keV): Compton hump จาก reflection จะเด่นขึ้น
+            """)
+        
+        # === Fitting Section for Uploaded Files ===
+        st.markdown("---")
+        st.markdown("### 🔧 Fitting with Observed Data")
+        
+        # Check if we have the necessary data for fitting
+        if uploaded_source and uploaded_arf:
+            st.info("✅ พบข้อมูล Spectrum และ ARF - สามารถทำ Fitting ได้")
+            
+            # Explanations
+            with st.expander("📖 Auto-fit (Optimization) คืออะไร?"):
+                st.markdown("""
+                **Auto-fit** ใช้ **Scipy L-BFGS-B Optimization** เพื่อหาพารามิเตอร์ที่ minimize χ²:
+                
+                **ขั้นตอน:**
+                1. เริ่มจากค่าพารามิเตอร์ปัจจุบันที่เลือก
+                2. คำนวณ gradient ของ χ² (ความชันของฟังก์ชัน)
+                3. ปรับค่าพารามิเตอร์ไปตามทิศทางที่ลด χ²
+                4. ทำซ้ำจนกว่า χ² จะไม่ลดลงอีก
+                
+                **ข้อดี:** เร็วมาก (< 1 วินาที)
+                **ข้อเสีย:** อาจติด local minimum ถ้าค่าเริ่มต้นไม่ดี
+                
+                **สูตร χ²:**
+                ```
+                χ² = Σ [(observed - predicted)² / error²]
+                ```
+                """)
+            
+            with st.expander("📖 Brute Force (Grid Search) คืออะไร?"):
+                st.markdown("""
+                **Brute Force** ลองทุก combination ของพารามิเตอร์ในช่วงที่กำหนด:
+                
+                **ขั้นตอน:**
+                1. แบ่งช่วงของแต่ละพารามิเตอร์เป็น N steps
+                2. สร้าง grid ของทุก combination ที่เป็นไปได้
+                3. คำนวณ χ² สำหรับทุก combination
+                4. เลือก combination ที่ให้ χ² ต่ำสุด
+                
+                **ตัวอย่าง:** ถ้ามี 3 parameters และ 5 steps ต่อ parameter
+                → ต้องลอง 5 × 5 × 5 = 125 combinations
+                
+                **ข้อดี:** หา global minimum ได้ (ไม่ติด local minimum)
+                **ข้อเสีย:** ช้ากว่า Auto-fit มาก
+                """)
+            
+            # Fitting buttons
+            col_btn1, col_btn2 = st.columns(2)
+            
+            # Helper class for response
+            class SimpleResponse:
+                def __init__(self, arf):
+                    self.arf = arf
+                    self.energy_lo = None
+                    self.energy_hi = None
+            
+            with col_btn1:
+                if st.button("🎯 Auto-fit (Fast)", key="autofit_upload"):
+                    with st.spinner("กำลัง Auto-fit..."):
+                        try:
+                            # Load data from uploaded files
+                            source_hdul = fits.open(uploaded_source)
+                            arf_hdul = fits.open(uploaded_arf)
+                            
+                            # Get spectrum data
+                            source_data = source_hdul[1].data
+                            channels = source_data['CHANNEL']
+                            counts = source_data['COUNTS']
+                            exposure = source_hdul[1].header.get('EXPOSURE', 1.0)
+                            
+                            # Get ARF data
+                            arf_data = arf_hdul[1].data
+                            energy_lo = arf_data['ENERG_LO']
+                            energy_hi = arf_data['ENERG_HI']
+                            specresp = arf_data['SPECRESP']
+                            energy = (energy_lo + energy_hi) / 2.0
+                            
+                            # Match data to energy
+                            min_len = min(len(channels), len(energy))
+                            observed_rate = counts[:min_len] / exposure
+                            observed_error = np.sqrt(np.maximum(counts[:min_len], 1)) / exposure
+                            energy_fit = energy[:min_len]
+                            arf_fit = specresp[:min_len]
+                            
+                            # Create response object
+                            response_obj = SimpleResponse(arf_fit)
+                            
+                            # Current parameters as initial guess
+                            initial_params = {
+                                'pl_norm': xray_pl_norm,
+                                'photon_index': xray_photon_index,
+                                'refl_norm': xray_refl_norm
+                            }
+                            
+                            # Fit
+                            result = sf.fit_spectrum(
+                                energy_fit, observed_rate, observed_error,
+                                ['powerlaw', 'reflection'], initial_params,
+                                response=response_obj
+                            )
+                            
+                            if result['success']:
+                                st.success(f"✅ Auto-fit สำเร็จ! χ²/dof = {result['reduced_chi_squared']:.3f}")
+                                st.markdown("**Best-fit Parameters:**")
+                                for p, v in result['best_params'].items():
+                                    st.write(f"- {p}: {v:.4f}")
+                            else:
+                                st.error(f"❌ Auto-fit ล้มเหลว: {result.get('message', 'Unknown error')}")
+                            
+                            source_hdul.close()
+                            arf_hdul.close()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
+            
+            with col_btn2:
+                bf_steps_up = st.slider("Brute Force Steps", 3, 10, 5, key="bf_steps_upload")
+                if st.button("🔎 Brute Force (Thorough)", key="bruteforce_upload"):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    try:
+                        # Load data from uploaded files
+                        source_hdul = fits.open(uploaded_source)
+                        arf_hdul = fits.open(uploaded_arf)
+                        
+                        # Get spectrum data
+                        source_data = source_hdul[1].data
+                        channels = source_data['CHANNEL']
+                        counts = source_data['COUNTS']
+                        exposure = source_hdul[1].header.get('EXPOSURE', 1.0)
+                        
+                        # Get ARF data
+                        arf_data = arf_hdul[1].data
+                        energy_lo = arf_data['ENERG_LO']
+                        energy_hi = arf_data['ENERG_HI']
+                        specresp = arf_data['SPECRESP']
+                        energy = (energy_lo + energy_hi) / 2.0
+                        
+                        # Match data to energy
+                        min_len = min(len(channels), len(energy))
+                        observed_rate = counts[:min_len] / exposure
+                        observed_error = np.sqrt(np.maximum(counts[:min_len], 1)) / exposure
+                        energy_fit = energy[:min_len]
+                        arf_fit = specresp[:min_len]
+                        
+                        # Create response object
+                        response_obj = SimpleResponse(arf_fit)
+                        
+                        # Parameter ranges
+                        param_ranges = {
+                            'pl_norm': (0.001, 1.0),
+                            'photon_index': (1.5, 3.0),
+                            'refl_norm': (0.0, 2.0)
+                        }
+                        
+                        # Brute force fit (Generator)
+                        generator = sf.brute_force_fit(
+                            energy_fit, observed_rate, observed_error,
+                            ['powerlaw', 'reflection'], param_ranges,
+                            n_steps=bf_steps_up, response=response_obj
+                        )
+                        
+                        final_result = None
+                        
+                        for status in generator:
+                            progress = status['progress']
+                            progress_bar.progress(progress)
+                            
+                            current_best = status.get('best_chi2_dof', float('inf'))
+                            status_text.markdown(f"""
+                            **Status:** {status.get('description', '')}
+                            - Iteration: {status.get('iteration')} / {status.get('total')}
+                            - Best χ²/dof so far: `{current_best:.4f}`
+                            """)
+                            
+                            if status['status'] == 'complete':
+                                final_result = status
+                        
+                        if final_result:
+                            st.success(f"✅ Brute Force สำเร็จ! χ²/dof = {final_result['best_chi2_dof']:.3f}")
+                            st.markdown("**Best-fit Parameters:**")
+                            for p, v in final_result['best_params'].items():
+                                st.write(f"- {p}: {v:.4f}")
+                            st.caption(f"ทดสอบ {final_result['total']:,} combinations")
+                        
+                        source_hdul.close()
+                        arf_hdul.close()
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")
+        else:
+            st.warning("⚠️ ต้องอัพโหลด Source Spectrum และ ARF เพื่อทำ Fitting")
 
 # Footer
 st.sidebar.markdown("---")
