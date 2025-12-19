@@ -80,6 +80,34 @@
     },
     {
       "run_id": null,
+      "timestamp": "2025-12-18T20:38:01.393458",
+      "chi2_dof": 5055234.178723404,
+      "params": {
+        "pl_norm": 0.001,
+        "photon_index": 2.8,
+        "nH": 1.0,
+        "refl_norm": 0.1,
+        "line_energy": 6.3,
+        "line_sigma": 0.3,
+        "line_norm": 0.1
+      },
+      "n_combinations": 78125,
+      "model_components": [
+        "powerlaw",
+        "tbabs",
+        "reflection",
+        "gaussian"
+      ],
+      "varied_models": [
+        "powerlaw",
+        "tbabs",
+        "reflection",
+        "gaussian"
+      ],
+      "fixed_params": {}
+    },
+    {
+      "run_id": null,
       "timestamp": "2025-12-17T12:31:52.575795",
       "chi2_dof": 697421840.855967,
       "params": {
@@ -112,5 +140,5 @@
       }
     }
   ],
-  "last_updated": "2025-12-17T12:32:21.396268"
+  "last_updated": "2025-12-18T20:38:01.393458"
 }
